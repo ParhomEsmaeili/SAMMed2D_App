@@ -11,7 +11,9 @@ from argparse import Namespace
 import gc 
 import sys
 import os 
-sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+app_local_path = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+sys.path.append(app_local_path) 
+# sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 from segment_anything import sam_model_registry as registry_sammed2d
 ########################################
 from monai.data import MetaTensor 
@@ -170,7 +172,7 @@ def load_sammed2d(checkpoint_path, encoder_model_type, image_size, device="cuda"
 
 class InferApp:
  
-    def __init__(self, dataset_info, infer_device):
+    def __init__(self, infer_device):
         
         self.sanity_check = False 
         self.sanity_slice_check = 510
@@ -178,7 +180,7 @@ class InferApp:
         #Some hardcoded params only for performing a sanity check on mapping the input image domain to the domain expected by the model.
 
         ############ Initialising the inference application #####################
-        self.dataset_info = dataset_info
+        # self.dataset_info = dataset_info
         self.infer_device = infer_device
 
         if self.infer_device.type != "cuda":
@@ -335,25 +337,15 @@ class InferApp:
         
         return discrete_mask, prob_mask, affine 
     def binary_subject_prep(self, request:dict):
-        
-        #Here we perform some actions for determining the state of the infer call for adjusting some of our info extraction mechanisms.
-         
-        #Ordering the set of interaction states provided, first check if there is an initialisation: if so, place that first. 
-        im_order = [] 
-        init_modes  = {'Automatic Init', 'Interactive Init'}
-        edit_names_list = list(set(request['im']).difference(init_modes))
 
-        #Sorting this list.
-        edit_names_list.sort(key=lambda test_str : list(map(int, re.findall(r'\d+', test_str))))
+        #Reading through the dataset info: 
+        self.dataset_info = request['dataset_info']
+        if len(self.dataset_info['task_channels']) != 1:
+            raise Exception('SAM-Med2D is only supported for single channel images (modality or sequence, or even fused)')
 
-        #Extending the ordered list. 
-        
-        im_order.extend(edit_names_list) 
-        #Loading the image and prompts in the input-im domain & the zoom-out domain.
-        
-        if request['model'] == 'IS_interactive_edit':
-            key = edit_names_list[-1]
-            is_state = request['im'][key]
+
+        if request['infer_mode'] == 'IS_interactive_edit':
+            is_state = request['i_state']
             if all([i is None for i in is_state['interaction_torch_format']['interactions'].values()]) or all([i is None for i in is_state['interaction_torch_format']['interactions_labels'].values()]):
                 raise Exception('Cannot be an interactive request without interactive inputs.')
             init = False 
@@ -366,9 +358,8 @@ class InferApp:
             assert isinstance(self.model_prompts_storage_dict, dict) and self.model_prompts_storage_dict #Just asserting that these are dicts and also non-empty.
             assert isinstance(self.box_prompted_slices, dict) and self.box_prompted_slices 
 
-        elif request['model'] == 'IS_interactive_init':
-            key = 'Interactive Init' 
-            is_state = request['im'][key]
+        elif request['infer_mode'] == 'IS_interactive_init':
+            is_state = request['i_state']
             if all([i is None for i in is_state['interaction_torch_format']['interactions'].values()]) or all([i is None for i in is_state['interaction_torch_format']['interactions_labels'].values()]):
                 raise Exception('Cannot be an interactive request without interactive inputs.')
             init = True 
@@ -384,7 +375,7 @@ class InferApp:
                 torch.cuda.empty_cache() #We clear cache for each new case because image sizes can have variance! 
             except:
                 pass #HACK: Not a good solution but want to clear the cached memory while keeping the script "online".
-
+            
             self.image_embeddings_dict = dict()
             self.internal_lowres_mask_storage = dict() #This is in the model domain!
             self.internal_discrete_output_mask_storage = dict() #This is in the cv2 coordinate system, 
@@ -399,9 +390,8 @@ class InferApp:
 
             torch.cuda.empty_cache()
 
-        elif request['model'] == 'IS_autoseg':
-            key = 'Automatic Init'
-            is_state = request['im'][key]
+        elif request['infer_mode'] == 'IS_autoseg':
+            is_state = request['i_state']
             if is_state is not None:
                 raise Exception('Autoseg should not have any interaction info.') 
             
@@ -848,7 +838,7 @@ class InferApp:
                 ax_slices_pre_resizing = {}
             ax_slices_process = {} 
 
-            if len(self.dataset_info['task_channel']) > 1:
+            if len(self.dataset_info['task_channels']) > 1:
                 raise Exception('Implementation currently is not capable of simultaneous handling of > 1 task channel segmentations.')
             #Normalisation logic is taken from their paper describing their dataset:
             if self.glob_norm_bool:
@@ -856,7 +846,7 @@ class InferApp:
 
                 #If it is not CT (i.e. values won't be negative), then we can use the positive voxels to calculate intensity
                 #statistics.
-                if self.dataset_info['task_channel'][0] == 'CT':
+                if self.dataset_info['task_channels'][0] == 'CT':
                     lower_bound, upper_bound = np.percentile(input_dom_im_backend, self.clip_lower_bound), np.percentile(input_dom_im_backend, self.clip_upper_bound)
                 else:
                     #Else, will use the positive voxels.
@@ -1474,7 +1464,7 @@ class InferApp:
         #We create a duplicate so we can transform the data from metatensor format to the torch tensor format compatible with the inference script.
         modif_request = copy.deepcopy(request) 
 
-        app = self.infer_apps[modif_request['model']][f'{class_type}_predict']
+        app = self.infer_apps[modif_request['infer_mode']][f'{class_type}_predict']
 
         #Setting the configs label dictionary for this inference request.
         self.configs_labels_dict = modif_request['config_labels_dict']
@@ -1489,7 +1479,7 @@ class InferApp:
 
         assert probs_tensor.shape[1:] == request['image']['metatensor'].shape[1:]
         assert pred.shape[1:] == request['image']['metatensor'].shape[1:] 
-        assert torch.all(affine == request['image']['metatensor'].meta['affine'])
+        assert torch.all(affine == request['image']['meta_dict']['affine'])
         assert isinstance(probs_tensor, torch.Tensor) 
         assert isinstance(pred, torch.Tensor)
         assert isinstance(affine, torch.Tensor)
@@ -1516,56 +1506,56 @@ class InferApp:
 if __name__ == '__main__':
    
     infer_app = InferApp(
-        {'dataset_name':'BraTS2021',
-        'dataset_modality':'MRI'}, torch.device('cuda', index=0))
+        torch.device('cuda', index=0)
+        )
 
     infer_app.app_configs()
 
     from monai.transforms import LoadImaged, Orientationd, EnsureChannelFirstd, Compose 
     import nibabel as nib 
 
-    input_dict = {'image':'/home/parhomesmaeili/IS-Validation-Framework/IS_Validate/datasets/BraTS2021_Training_Data_Split_True_proportion_0.8_channels_t2_resized_FLIRT_binarised/imagesTs/BraTS2021_00266.nii.gz'}
+    input_dict = {
+        'image':os.path.join(app_local_path, 'debug_image/BraTS2021_00266.nii.gz')
+    }
     load_and_transf = Compose([LoadImaged(keys=['image']), EnsureChannelFirstd(keys=['image']), Orientationd(keys=['image'], axcodes='RAS')])
 
-    final_loaded_im = load_and_transf(input_dict)
-    meta = {'original_affine': torch.from_numpy(final_loaded_im['image_meta_dict']['original_affine']).to(dtype=torch.float64), 'affine': torch.from_numpy(final_loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64)}
-    input_metatensor = MetaTensor(x=torch.from_numpy(final_loaded_im['image']).to(dtype=torch.float64), meta=meta) #affine=torch.from_numpy(final_loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64))
-    # MetaTensor(x=torch.from_numpy(final_loaded_im['image']).to(dtype=torch.float64), meta=final_loaded_im['image_meta_dict'], affine=torch.from_numpy(final_loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64))
+    loaded_im = load_and_transf(input_dict)
+    input_metatensor = torch.from_numpy(loaded_im['image'])
+    meta = {'original_affine': torch.from_numpy(loaded_im['image_meta_dict']['original_affine']).to(dtype=torch.float64), 'affine': torch.from_numpy(loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64)}
+    
     request = {
         'image':{
             'metatensor': input_metatensor,
-            'meta_dict':{'affine':input_metatensor.affine}
+            'meta_dict':meta
         },
-        'model':'IS_interactive_init',
-        # 'model': 'IS_autoseg',
+        'infer_mode':'IS_interactive_init',
         'config_labels_dict':{'background':0, 'tumor':1},
-        'im':
-        # {'Automatic Init': None,
-        {'Interactive Init':{
+        'dataset_info': {
+            'dataset_name':'BraTS2021_t2',
+            'dataset_image_channels':{'T2w':0},
+            'task_channels':['T2w'],
+        },
+        'i_state': { 
             'interaction_torch_format': {
                 'interactions': {
-                    'points': [torch.tensor([[40, 103, 43]]), torch.tensor([[62, 62, 39]]), torch.tensor([[61, 62, 39]])], #None
-                    'scribbles': None,#[torch.tensor([[63,62,39], [64,62,39],[65,62,39]]), torch.tensor([[73,62,39], [74,62,39],[75,62,39]])], 
-                    #This second scribble is a fugazi but intended just for sanity checking the mapping.
-                    'bboxes': None#[torch.Tensor([[56,30,17, 92, 76, 51]]).to(dtype=torch.int64), torch.Tensor([[93,80,30, 105, 100, 51]]).to(dtype=torch.int64)]  #None 
-                    },#This second box is a fugazi but intended just for sanity checking that the multi-box method works. 17-51 should be the real bounds.
+                    'points': [torch.tensor([[40, 103, 43]]), torch.tensor([[61, 62, 39]])], #None
+                    'scribbles': None,
+                    'bboxes': [torch.Tensor([[56,30,17, 92, 76, 51]]).to(dtype=torch.int64), torch.Tensor([[93,80,30, 105, 100, 51]]).to(dtype=torch.int64)]  #None 
+                    },#This second box is fake but intended just for sanity checking that the multi-box method works.
                 'interactions_labels': {
-                    'points_labels': [torch.tensor([0]), torch.tensor([1]), torch.tensor([1])], #None,#[torch.tensor([0]), torch.tensor([1])], 
-                    'scribbles_labels':None,#[torch.tensor([1]), torch.tensor([0])],  
-                    'bboxes_labels': None#[torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)] #None
+                    'points_labels': [torch.tensor([0]), torch.tensor([1])],
+                    'scribbles_labels':None,
+                    'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)] #None
                     },
-                }
-            # 'interaction_dict_format': {
-            # 'points': {'background': [[40, 103, 43]],
-            # 'tumor': [[61,62,39],[62, 62, 39]]
-            # },
-            # 'points': None,
-            # 'scribbles': None, #{'background':[[73,62,39], [74,62,39],[75,62,39]]], 'tumor': [[[63,62,39], [64,62,39], [65,62,39]]] }
-            # 'bboxes': None, #{'background': [], 'tumor': [[56,30,17, 92, 76, 51]]} #None
             },
-            # 'prev_probs': {'metatensor': None, 'meta_dict': None}, 
-            # 'prev_pred': {'metatensor': None, 'meta_dict': None}}
-        },
+            'interaction_dict_format': {
+                'points': {'background': [[40, 103, 43]],
+                'tumor': [[61,62,39]]
+                    },
+                'scribbles': None,
+                'bboxes': {'background': [], 'tumor': [[56,30,17, 92, 76, 51], [93,80,30, 105, 100, 51]]} #None
+            },
+        }
     }
     output = infer_app(request)
     # print('halt')
@@ -1575,37 +1565,37 @@ if __name__ == '__main__':
     request2 = {
         'image':{
             'metatensor': input_metatensor,
-            'meta_dict':{'affine':input_metatensor.affine}
+            'meta_dict':meta
         },
-        'model':'IS_interactive_edit',
+        'infer_mode':'IS_interactive_edit',
         'config_labels_dict':{'background':0, 'tumor':1},
-        'im':
-        {'Interactive Edit Iter 1':{
+        'dataset_info': {
+            'dataset_name':'BraTS2021',
+            'dataset_image_channels':{'T2w':0},
+            'task_channels':['T2w'],
+        },
+        'i_state':
+        {
             'interaction_torch_format': {
                 'interactions': {
-                    'points': [torch.tensor([[62,62,39]])],#[torch.tensor([[41, 103, 69]]), torch.tensor([[62, 62, 57]]), torch.tensor([[61, 62, 57]])], #None
-                    'scribbles': None,#[torch.tensor([[63,62,29], [64,62,29],[65,62,29]]), torch.tensor([[73,62,57], [74,62,57],[75,62,57]])], 
-                    #This second scribble is a fugazi but intended just for sanity checking the mapping.
-                    'bboxes': [torch.Tensor([[56,30,17, 92, 76, 39]]).to(dtype=torch.int64), torch.Tensor([[93,80,30, 105, 100, 51]]).to(dtype=torch.int64)]  #None 
-                    },#This second box is a fugazi but intended just for sanity checking that the multi-box method works. 17-51 should be the real bounds.
+                    'points': [torch.tensor([[62,62,39]])], #None
+                    'scribbles': None,
+                    'bboxes': [torch.Tensor([[56,30,17, 92, 76, 51]]).to(dtype=torch.int64), torch.Tensor([[93,80,30, 105, 100, 51]]).to(dtype=torch.int64)]  #None 
+                    },#This second box is fake but intended just for sanity checking that the multi-box method works.
                 'interactions_labels': {
-                    'points_labels': [torch.tensor([1])],#[torch.tensor([0]), torch.tensor([1]), torch.tensor([1])], #None,#[torch.tensor([0]), torch.tensor([1])], 
-                    'scribbles_labels':None,#[torch.tensor([1]), torch.tensor([0])],  
+                    'points_labels': [torch.tensor([1])],
+                    'scribbles_labels':None,  
                     'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64), torch.Tensor([1]).to(dtype=torch.int64)] #None
-                    }
-                    },
-          
-            # 'interaction_dict_format': {
-            # 'points': {'background': [[40, 103, 43]],
-            # 'tumor': [[61,62,39],[62, 62, 39]]
-            # },
-            # # 'points': None,
-            # 'scribbles': None, #{'background':[[73,62,39], [74,62,39],[75,62,39]]], 'tumor': [[[63,62,39], [64,62,39], [65,62,39]]] }
-            # 'bboxes': None, #{'background': [], 'tumor': [[56,30,17, 92, 76, 51]]} #None
-            # },
-            'prev_probs': {'metatensor': None, 'meta_dict': None}, 
-            'prev_pred': {'metatensor': None, 'meta_dict': None}}
-        },
+                }
+            },
+            'interaction_dict_format': {
+                'points': {'background': [],
+                'tumor': [[62, 62, 39]]
+                },
+                'scribbles': None,
+                'bboxes': {'background': [], 'tumor': [[56,30,17, 92, 76, 51], [93,80,30, 105, 100, 51]]}
+            },
+        }
     }
 
     output2 = infer_app(request2)
