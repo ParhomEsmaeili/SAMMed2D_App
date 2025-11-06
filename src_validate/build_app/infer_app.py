@@ -434,7 +434,7 @@ class InferApp:
     
     def binary_prop_to_model(self, im_dict: dict, is_state: dict | None, init: bool):
         
-        #Prompts and images are provided in L->R, P->A, S -> I  (where the image itself was also been correspondingly rotated since array_coords >=0).
+        #Prompts and images are provided in RAS+( L->R, P->A, I -> S)  (where the image itself was also been correspondingly rotated since array_coords >=0).
         # 
         #Visual inspection of the images provided in the original demo demonstrate that the positive directions of the axes in the axial slice corresponds to the R -> L, A -> P convention.
         #but, the ordering of the axes differs. I.e., the y dimension of the image array is the A - P dimension, while the x dimension is the R -> L dimension.
@@ -982,7 +982,7 @@ class InferApp:
 
                         #In this case, we return a tensor of -1000 for the output as this will eval to 0s at the floating point precision for the prob map under 
                         # sigmoid. Internally store a different mask variable, a Nonetype (i.e., it will treat that first interaction instance as an init..)
-                        logits_outputs, lowres_masks = -1000 * torch.ones([1,1] + self.input_dom_shapes[ax][::-1].tolist()) , None
+                        logits_outputs, lowres_masks = -1000 * torch.ones([1,1] + self.input_dom_shapes[ax][::-1].tolist()).to(device=self.infer_device) , None
                         if not torch.all(torch.sigmoid(logits_outputs) == 0):
                             raise Exception('Error with the strategy for generating p = 0 maps.')
                         self.internal_lowres_mask_storage[ax][slice_idx] = lowres_masks  
@@ -1204,13 +1204,14 @@ class InferApp:
             assert low_res_masks.shape[0] == 1
         
         #HACK: to help prevent segfaulting of the GPU VRAM.
-        mask = mask.to(device='cpu')
-        low_res_masks = low_res_masks.to(device='cpu')
-        masks = masks.to(device='cpu')
-        sparse_embeddings = sparse_embeddings.to(device='cpu')
-        dense_embeddings = dense_embeddings.to(device='cpu')
-        gc.collect()
-        torch.cuda.empty_cache() 
+        # mask = mask.to(device='cpu')
+        # low_res_masks = low_res_masks.to(device='cpu')
+        # masks = masks.to(device='cpu')
+        # sparse_embeddings = sparse_embeddings.to(device='cpu')
+        # dense_embeddings = dense_embeddings.to(device='cpu')
+        # gc.collect()
+        # torch.cuda.empty_cache() 
+        #Functionally was doing nothing and just slowing things down, so commented out.
 
         return masks, iou_predictions, low_res_masks
     
@@ -1362,15 +1363,15 @@ class InferApp:
             assert low_res_masks.shape[0] == 1
 
         #HACK: to help prevent segfaulting of the GPU VRAM.
-        if mask is None:
-            pass 
-        else:
-            mask = mask.to(device='cpu')
-        low_res_masks = low_res_masks.to(device='cpu')
-        masks = masks.to(device='cpu')
-        sparse_embeddings = sparse_embeddings.to(device='cpu')
-        dense_embeddings = dense_embeddings.to(device='cpu')
-        gc.collect()
+        # if mask is None:
+        #     pass 
+        # else:
+            # mask = mask.to(device='cpu')
+        # low_res_masks = low_res_masks.to(device='cpu')
+        # masks = masks.to(device='cpu')
+        # sparse_embeddings = sparse_embeddings.to(device='cpu')
+        # dense_embeddings = dense_embeddings.to(device='cpu')
+        # gc.collect() #Functionally doing nothing! Lets remove this to save time.
         torch.cuda.empty_cache() 
 
         return masks, iou_predictions, low_res_masks
@@ -1473,9 +1474,10 @@ class InferApp:
 
         pred = pred.to(device='cpu')
         probs_tensor = probs_tensor.to(device='cpu')
-        affine = affine.to(device='cpu')
+        # affine = affine.to(device='cpu')
         torch.cuda.empty_cache()
-
+        
+        
 
         assert probs_tensor.shape[1:] == request['image']['metatensor'].shape[1:]
         assert pred.shape[1:] == request['image']['metatensor'].shape[1:] 
@@ -1496,11 +1498,13 @@ class InferApp:
         }
         #Functionally probably wont do anything but putting it here as a placebo. Won't make a diff because there are references
         #to these variables throughout.
-        del pred 
-        del probs_tensor
-        del affine
-        del modif_request
-        gc.collect() 
+        # del pred 
+        # del probs_tensor
+        # del affine
+        # del modif_request
+        # gc.collect()  
+
+        #We removed the garbage collection operation as it made no difference and only slowed down the inference noticeably.
         return output 
     
 if __name__ == '__main__':
