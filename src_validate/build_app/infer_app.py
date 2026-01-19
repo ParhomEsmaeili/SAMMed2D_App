@@ -172,7 +172,7 @@ def load_sammed2d(checkpoint_path, encoder_model_type, image_size, device="cuda"
 
 class InferApp:
  
-    def __init__(self, infer_device, algorithm_state, enable_adaptation, algo_cache_name):
+    def __init__(self, infer_device, adaptation_config_name: str, algorithm_state, enable_adaptation, algo_cache_name):
         
         self.sanity_check = False 
         self.sanity_slice_check = 510
