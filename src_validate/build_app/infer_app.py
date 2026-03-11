@@ -172,8 +172,15 @@ def load_sammed2d(checkpoint_path, encoder_model_type, image_size, device="cuda"
 
 class InferApp:
  
-    def __init__(self, infer_device, adaptation_config_name: str, algorithm_state, enable_adaptation, algo_cache_name):
-        
+    def __init__(self, 
+        infer_device, 
+        adaptation_config_name: str, 
+        algorithm_state: dict = {},
+        enable_adaptation: bool = False,
+        execute_on_adapted: bool = False,
+        episode_number: int | None = None,
+        algo_cache_name: str = ''):
+          
         self.sanity_check = False 
         self.sanity_slice_check = 510
         self.cpu_gpu_burden_ratio = 1 #1 = put everything on GPU with the modulo operation
