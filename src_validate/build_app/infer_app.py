@@ -496,7 +496,7 @@ class InferApp:
             if p_dict[0] is not None:
                 for ptype in ['points', 'scribbles', 'bboxes']:
                     if p_dict[0].get(ptype) is not None:
-                        p_dict[0][ptype] = [torch.floor(t) for t in p_dict[0][ptype]]
+                        p_dict[0][ptype] = [torch.floor(t).to(dtype=torch.int64) for t in p_dict[0][ptype]]
             
             if p_dict[0]['bboxes'] is not None and p_dict[1]['bboxes_labels'] is not None:
                 #We will flag any background bboxes here. SAM-MED2D cannot handle these (nor does it have any meaning in the context within which they use this.)
